@@ -31,6 +31,8 @@
     userLatLng: null,
     selectedLandmarkId: null,
     arrivedGateId: null,
+    routeActive: false,
+    lastRouteAnnouncement: "",
     // PDR
     anchor: null,            // { lat, lng, floor, label }
     heading: 0,              // degrees 0..359
@@ -216,6 +218,7 @@
       state.userMarker.setIcon(icon);
     }
     if (pan) map.setView([lat, lng], Math.max(map.getZoom(), state.mode === "INDOOR" ? 20 : 18));
+    if (state.routeActive) updateRouteGuidance();
   }
 
   // ---------- Landmarks ----------
@@ -361,6 +364,8 @@
     searchInput.value = lm.name;
     searchResults.innerHTML = "";
     checkArrival();
+    updateDirectionButton();
+    if (state.routeActive) updateRouteGuidance();
   }
 
   searchInput.addEventListener("input", refreshSearch);
@@ -383,6 +388,95 @@
     t.hidden = false;
     clearTimeout(showToast._t);
     showToast._t = setTimeout(() => (t.hidden = true), 6000);
+  }
+
+  function updateDirectionButton() {
+    const btn = $("#startDirectionsBtn");
+    if (!btn) return;
+    btn.textContent = state.routeActive ? "Stop directions" : "Start giving direction";
+    btn.classList.toggle("active", state.routeActive);
+  }
+
+  function speakText(text) {
+    if (!text || !("speechSynthesis" in window)) return;
+    const synth = window.speechSynthesis;
+    if (typeof synth.cancel === "function") synth.cancel();
+    const spoken = new SpeechSynthesisUtterance(text);
+    spoken.rate = 1;
+    spoken.pitch = 1;
+    spoken.lang = "en-US";
+    synth.speak(spoken);
+  }
+
+  function getSelectedDestination() {
+    if (!state.selectedLandmarkId) return null;
+    return loadLandmarks().find(lm => lm.id === state.selectedLandmarkId) || null;
+  }
+
+  function normalizeDelta(deg) {
+    return ((deg % 360) + 360) % 360;
+  }
+
+  function describeTurn(deltaDegrees) {
+    const normalized = normalizeDelta(deltaDegrees);
+    if (normalized <= 22.5 || normalized >= 337.5) return "Go straight";
+    if (normalized < 180) return "Turn right";
+    return "Turn left";
+  }
+
+  function getTargetBearing(destination) {
+    if (!state.userLatLng) return null;
+    const lat1 = toRad(state.userLatLng.lat);
+    const lat2 = toRad(destination.lat);
+    const dLng = toRad(destination.lng - state.userLatLng.lng);
+    const y = Math.sin(dLng) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+    const bearing = (toDeg(Math.atan2(y, x)) + 360) % 360;
+    return bearing;
+  }
+
+  function updateRouteGuidance() {
+    if (!state.routeActive) return;
+    const destination = getSelectedDestination();
+    if (!destination) return;
+
+    let distanceMeters = null;
+    let bearing = null;
+
+    if (state.mode === "OUTDOOR" && state.userLatLng) {
+      distanceMeters = haversine(state.userLatLng, destination);
+      bearing = getTargetBearing(destination);
+    } else if (state.mode === "INDOOR" && state.anchor) {
+      const targetEastMeters = (destination.lng - state.anchor.lng) * 111320 * Math.cos(toRad(state.anchor.lat));
+      const targetNorthMeters = (destination.lat - state.anchor.lat) * 111320;
+      const dx = targetEastMeters - state.pdrOffsetMeters.x;
+      const dy = targetNorthMeters - state.pdrOffsetMeters.y;
+      distanceMeters = Math.hypot(dx, dy);
+      bearing = (toDeg(Math.atan2(dx, dy)) + 360) % 360;
+    }
+
+    if (distanceMeters == null || !Number.isFinite(distanceMeters) || distanceMeters < 0) return;
+    const directionText = describeTurn(normalizeDelta((bearing ?? 0) - state.heading));
+    const roundedDistance = Math.max(0, Math.round(distanceMeters));
+    let message = `${directionText}. ${roundedDistance} meters to go.`;
+    if (roundedDistance <= 10) {
+      message = "You are very close. Slow down and finish at your destination.";
+    } else if (roundedDistance <= 20) {
+      message = `${directionText}. ${roundedDistance} meters left.`;
+    }
+
+    if (distanceMeters <= ARRIVAL_RADIUS_M) {
+      state.routeActive = false;
+      updateDirectionButton();
+      state.lastRouteAnnouncement = "";
+      speakText("You have arrived at your destination.");
+      return;
+    }
+
+    if (state.lastRouteAnnouncement !== message) {
+      state.lastRouteAnnouncement = message;
+      speakText(message);
+    }
   }
 
   // ---------- Outdoor: Geolocation ----------
@@ -888,6 +982,7 @@
   function setHeading(deg) {
     state.heading = ((deg % 360) + 360) % 360;
     $("#hudHeading").textContent = Math.round(state.heading) + "°";
+    if (state.routeActive) updateRouteGuidance();
   }
 
   // ---------- Sensors ----------
@@ -1612,7 +1707,29 @@
     }
   });
 
+  $("#startDirectionsBtn").addEventListener("click", () => {
+    const destination = getSelectedDestination();
+    if (!destination) {
+      showNfcStatus("Select a landmark or scan a QR code before starting directions.", "info", "Choose destination");
+      return;
+    }
+
+    state.routeActive = !state.routeActive;
+    state.lastRouteAnnouncement = "";
+    updateDirectionButton();
+
+    if (!state.routeActive) {
+      speakText("Directions stopped.");
+      return;
+    }
+
+    const intro = `Start giving direction to ${destination.name}.`;
+    speakText(intro);
+    updateRouteGuidance();
+  });
+
   // ---------- Boot ----------
+  updateDirectionButton();
   refreshAvailableFloors();
   renderLandmarkMarkers();
   renderFloorSwitch();

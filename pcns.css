@@ -118,6 +118,14 @@ html, body {
 }
 .btn:hover { border-color: var(--plum); color: var(--neon); }
 .btn-ghost { background: rgba(13,6,22,0.85); backdrop-filter: blur(10px); }
+.route-btn {
+  min-width: 170px; white-space: nowrap; font-size: 11px;
+}
+.route-btn.active {
+  background: rgba(74, 222, 128, 0.12);
+  border-color: rgba(74, 222, 128, 0.8);
+  color: var(--ok);
+}
 .btn-primary {
   background: linear-gradient(180deg, var(--plum-2), var(--plum));
   color: #fff; border-color: transparent; font-weight: 700;
